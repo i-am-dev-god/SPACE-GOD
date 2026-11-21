@@ -18,7 +18,7 @@ const WORLD = { width: 12.6, half: 6.3, length: 0, sampleCount: 1500 };
 const MASS = 1325, WHEELBASE = 2.86, MAX_STEER = 0.52, G = 9.81;
 const controls = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
 const keys = new Set();
-let renderer, scene, camera, carAsset, roadAsset, barrierAsset, roadMaterial;
+let renderer, scene, camera, carAsset, barrierAsset, roadMaterial;
 let player, bots = [], trackCurve, trackSamples = [], trackCum = [], trackMesh, grassMaterial;
 let running = false, paused = false, finished = false, raceStarted = false, cameraMode = 0;
 let startCountdown = 0, raceTime = 0, toastTimer = 0, raceMessageTimer = 0;
@@ -120,12 +120,8 @@ function surfaceGeometry(innerWidth, outerWidth, height, steps = 1500) {
   }
   const geom = new THREE.BufferGeometry(); geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2)); geom.setIndex(indices); geom.computeVertexNormals(); return geom;
 }
-function createTrack(kit) {
+function createTrack() {
   makeTrackCurve(); addGround();
-  const source = kit.getObjectByName('Road_Straight');
-  roadMaterial = source?.material?.clone() || new THREE.MeshStandardMaterial({ color: 0x343739, roughness: .9 });
-  roadMaterial.side = THREE.DoubleSide; roadMaterial.roughness = Math.max(.7, roadMaterial.roughness || .8); roadMaterial.metalness = 0.02;
-  for (const tex of [roadMaterial.map, roadMaterial.normalMap, roadMaterial.roughnessMap]) if (tex) { tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.anisotropy = 8; }
   const road = new THREE.Mesh(surfaceGeometry(-WORLD.half, WORLD.half, 0.12, 1900), roadMaterial);
   road.receiveShadow = true; road.castShadow = false; road.name = 'Racing surface'; worldGroup.add(road); trackMesh = road;
   const runoffMat = new THREE.MeshStandardMaterial({ color: 0x8e8b7b, roughness: .94 });
@@ -254,8 +250,8 @@ function placeCarOnTrack(car, t, lane) {
   car.x = p.x; car.z = p.z; car.yaw = yaw; car.vx = car.vz = 0; car.speed = 0; car.yawRate = 0; car.vLat = 0; car.t = t; car.lastT = t; car.lane = lane;
   car.group.position.set(p.x, .08, p.z); car.group.rotation.y = yaw;
 }
-function createScenery(kit, barriers) {
-  createTrack(kit); addBarriers(barriers); addTreeLine(); addPitBuildings();
+function createScenery(barriers) {
+  createTrack(); addBarriers(barriers); addTreeLine(); addPitBuildings();
 }
 function projectToTrack(x, z) {
   let bestD2 = Infinity, bestI = 0, bestU = 0, bestX = 0, bestZ = 0;
@@ -324,8 +320,11 @@ function updateVehicle(car, dt, command) {
   const response = 1 - Math.exp(-dt * (3.3 + Math.min(absV * .06, 2.5)));
   car.yawRate = lerp(car.yawRate, targetYaw, response);
   const powerDrop = clamp(1 - absV / 76, .12, 1);
-  let ax = throttle * 6.9 * powerDrop - brake * (vLong >= 0 ? 11.6 : -7.5) - Math.sign(vLong) * (.13 + .00040 * vLong * vLong);
-  if (handbrake) ax -= Math.sign(vLong || 1) * handbrake * 1.5;
+  const driveAccel = Math.min(throttle * 6.9 * powerDrop, mu * G * .88); // traction-control grip cap
+  const brakeAccel = Math.min(brake * 11.6, mu * G * .92); // ABS friction cap
+  const brakeDirection = absV > .18 ? Math.sign(vLong) : 0;
+  let ax = driveAccel - brakeDirection * brakeAccel - Math.sign(vLong) * (.13 + .00040 * vLong * vLong);
+  if (handbrake && absV > .18) ax -= Math.sign(vLong) * handbrake * 1.5;
   const ay = -car.yawRate * vLong - vLat * (2.7 + mu * 1.1);
   const aLong = ax + car.yawRate * vLat;
   const aWorld = forward.multiplyScalar(aLong).add(right.multiplyScalar(ay));
@@ -528,6 +527,22 @@ function bindUI() {
     btn.addEventListener('pointerdown', down); btn.addEventListener('pointerup', up); btn.addEventListener('pointercancel', up); btn.addEventListener('pointerleave', up);
   }
 }
+function loadRoadSurface() {
+  const textureLoader = new THREE.TextureLoader();
+  const loadMap = (filename, colorSpace = THREE.NoColorSpace) => new Promise((resolve, reject) => {
+    textureLoader.load(ASSET(filename), texture => {
+      texture.colorSpace = colorSpace; texture.wrapS = texture.wrapT = THREE.RepeatWrapping; texture.flipY = false;
+      texture.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy()); resolve(texture);
+    }, undefined, reject);
+  });
+  return Promise.all([
+    loadMap('asphalt-base.png', THREE.SRGBColorSpace),
+    loadMap('asphalt-normal.png'),
+    loadMap('asphalt-roughness.png'),
+  ]).then(([map, normalMap, roughnessMap]) => {
+    roadMaterial = new THREE.MeshStandardMaterial({ map, normalMap, roughnessMap, roughness: .92, metalness: 0, side: THREE.DoubleSide, normalScale: new THREE.Vector2(.74, .74) });
+  });
+}
 async function loadAsset(url, label, progress) {
   return new Promise((resolve, reject) => loader.load(url, (gltf) => { setLoading(progress, `${label} ready`); resolve(gltf.scene); }, undefined, reject));
 }
@@ -535,9 +550,9 @@ async function boot() {
   bindUI(); makeRenderer(); setLoading(.05, 'Loading car geometry…');
   try {
     carAsset = await loadAsset(ASSET('gt3-car.glb'), 'GT3 vehicle', .38);
-    setLoading(.42, 'Loading circuit materials…'); roadAsset = await loadAsset(ASSET('circuit-kit.glb'), 'Circuit surface kit', .68);
-    setLoading(.72, 'Loading safety assets…'); barrierAsset = await loadAsset(ASSET('safety-barriers.glb'), 'Trackside safety kit', .86);
-    setLoading(.88, 'Building circuit and race grid…'); createScenery(roadAsset, barrierAsset); initializeCars(carAsset);
+    setLoading(.42, 'Loading asphalt PBR maps…'); await loadRoadSurface(); setLoading(.68, 'Circuit materials ready');
+    barrierAsset = await loadAsset(ASSET('safety-barriers.glb'), 'Trackside safety kit', .86);
+    setLoading(.88, 'Building circuit and race grid…'); createScenery(barrierAsset); initializeCars(carAsset);
     const sky = new THREE.Mesh(new THREE.SphereGeometry(950, 32, 18), new THREE.MeshBasicMaterial({ color: 0x9eb7c6, side: THREE.BackSide, fog: false })); sky.position.y = 110; worldGroup.add(sky);
     setLoading(.97, 'Ready for the green flag');
     ui.bestLap.textContent = Number.isFinite(player.bestLap) ? formatTime(player.bestLap) : '--:--.---';
