@@ -18,7 +18,7 @@ const WORLD = { width: 14.4, half: 7.2, length: 0, sampleCount: 1800 };
 const MASS = 1325, WHEELBASE = 2.86, MAX_STEER = 0.52, G = 9.81;
 const controls = { throttle: 0, brake: 0, steer: 0, handbrake: 0 };
 const keys = new Set();
-let renderer, scene, camera, carAsset, barrierAsset, roadMaterial;
+let renderer, scene, camera, carAsset, treeAsset, barrierAsset, roadMaterial;
 let player, bots = [], trackCurve, trackSamples = [], trackCum = [], trackMesh, grassMaterial;
 let running = false, paused = false, finished = false, raceStarted = false, cameraMode = 0;
 let startCountdown = 0, raceTime = 0, toastTimer = 0, raceMessageTimer = 0, aiPace = 1;
@@ -221,26 +221,31 @@ function addStartFinish() {
   for (let i = 0; i < 10; i++) { const bulb = new THREE.Mesh(new THREE.SphereGeometry(.17, 10, 8), new THREE.MeshStandardMaterial({ color: 0xff4136, emissive: 0xe3211a, emissiveIntensity: 3 })); bulb.position.set(0, 7.75, -4.3 + i * .95); gantry.add(bulb); }
   gantry.position.set(p.x, 0, p.z); gantry.rotation.y = yaw; worldGroup.add(gantry);
 }
-function addTreeLine() {
-  // Keep the circuit open and readable: sparse landscaping is pushed well behind runoff.
-  const trunkGeo = new THREE.CylinderGeometry(.2, .34, 3.2, 8);
-  const crownGeo = new THREE.SphereGeometry(1, 9, 7);
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x594836, roughness: 1 });
-  const greens = [0x49644d, 0x5a7052, 0x536b5a].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: .96 }));
-  const count = 46; const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
-  const crowns = greens.map(mat => new THREE.InstancedMesh(crownGeo, mat, count));
-  const d = new THREE.Object3D(); const crownCounts = greens.map(() => 0); let seed = 191;
-  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-  for (let i = 0; i < count; i++) {
-    const t = rnd(); const side = rnd() < .5 ? -1 : 1;
-    const p = pointAt(t, side * (WORLD.half + 82 + rnd() * 110), 0); const scale = .75 + rnd() * .72;
-    d.position.set(p.x, 1.6 * scale, p.z); d.rotation.set(0, rnd() * Math.PI * 2, 0); d.scale.set(scale, scale, scale); d.updateMatrix(); trunks.setMatrixAt(i, d.matrix);
-    d.position.y = 5.4 * scale; d.scale.set(2.2 * scale, 2.1 * scale, 2.2 * scale); d.updateMatrix();
-    const crownIndex = i % greens.length; crowns[crownIndex].setMatrixAt(crownCounts[crownIndex]++, d.matrix);
+function addTreeLine(treeSource) {
+  // Use the supplied, detailed field-maple GLB; trees stay sparse and well behind the runoff.
+  if (treeSource) {
+    const trees = new THREE.Group(); let seed = 191;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    const count = 28;
+    for (let i = 0; i < count; i++) {
+      const t = (i / count + (rnd() - .5) * .018 + 1) % 1;
+      const side = i % 2 ? -1 : 1;
+      const p = pointAt(t, side * (WORLD.half + 82 + rnd() * 104), 0);
+      const tree = treeSource.clone(true); tree.name = `Field maple ${String(i + 1).padStart(2, '0')}`;
+      tree.position.set(p.x, 0, p.z); tree.rotation.y = rnd() * Math.PI * 2;
+      const scale = .72 + rnd() * .34; tree.scale.setScalar(scale);
+      tree.traverse(o => {
+        if (o.name.startsWith('UCX_')) { o.visible = false; return; }
+        if (o.isMesh) {
+          const foliage = o.name.toLowerCase().includes('leaf');
+          o.castShadow = !foliage; o.receiveShadow = false;
+        }
+      });
+      trees.add(tree);
+    }
+    worldGroup.add(trees);
   }
-  crowns.forEach((mesh, i) => { mesh.count = crownCounts[i]; });
-  worldGroup.add(trunks, ...crowns);
-  // Low, smooth distant ridgelines; avoid the spiky tree-like silhouettes that read as forest.
+  // Low, smooth distant ridgelines keep the horizon open rather than creating a forest wall.
   const ridgeMat = [0x7b8978, 0x87917d, 0x6f806f].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 1 }));
   for (let i = 0; i < 10; i++) {
     const angle = i / 10 * Math.PI * 2; const radius = 490 + (i % 3) * 65;
@@ -297,24 +302,42 @@ function addBarriers(asset) {
   }
 }
 function makeCar(root, name, color, isPlayer = false) {
-  const model = root.clone(true); model.name = name;
-  const body = model.getObjectByName('Main_Body');
-  if (body?.material) {
-    body.material = body.material.clone(); body.material.color.set(color);
-    body.material.metalness = .48; body.material.roughness = .3;
-    if (body.material.clearcoat !== undefined) { body.material.clearcoat = .9; body.material.clearcoatRoughness = .16; }
-  }
-  model.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; if (o.material?.transparent) { o.material.depthWrite = false; o.material.side = THREE.DoubleSide; } } });
+  const model = root.clone(true); model.name = name; const brakeMaterials = [];
+  model.traverse(o => {
+    if (!o.isMesh) return;
+    const recolorMaterial = (source) => {
+      const mat = source.clone();
+      // Preserve the Vesper's graphite paint and only recolor its authored identification enamel.
+      if (mat.name.includes('Citron identification enamel')) mat.color.set(color);
+      if (mat.name.includes('Ruby light guide')) brakeMaterials.push(mat);
+      if (mat.transparent) { mat.depthWrite = false; mat.side = THREE.DoubleSide; }
+      return mat;
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(recolorMaterial) : recolorMaterial(o.material);
+    o.castShadow = true; o.receiveShadow = true;
+  });
   const group = new THREE.Group(); group.add(model); worldGroup.add(group);
-  return { name, group, model, isPlayer, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, yawRate: 0, speed: 0, vLat: 0, t: 0, lap: 0, lastT: 0, lapStart: 0, lastLap: NaN, bestLap: Number(localStorage.getItem('apex-best-lap') || NaN), steer: 0, throttle: 0, brake: 0, handbrake: 0, rpm: 950, gear: 1, progress: 0, lane: 0, ai: !isPlayer, finished: false, finishTime: 0, startArmed: isPlayer, wheelNodes: ['Wheel_FL','Wheel_FR','Wheel_RL','Wheel_RR'].map(n => model.getObjectByName(n)).filter(Boolean), brakeLights: model.getObjectByName('Rear_Lights') };
+  const find = (...names) => names.map(n => model.getObjectByName(n)).find(Boolean);
+  const wheels = [
+    find('Wheel FL', 'Wheel_FL'), find('Wheel FR', 'Wheel_FR'),
+    find('Wheel RL', 'Wheel_RL'), find('Wheel RR', 'Wheel_RR'),
+  ].filter(Boolean);
+  const steeringNodes = [find('Knuckle FL'), find('Knuckle FR')].filter(Boolean);
+  return {
+    name, group, model, isPlayer, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, yawRate: 0, speed: 0, vLat: 0,
+    t: 0, lap: 0, lastT: 0, lapStart: 0, lastLap: NaN,
+    bestLap: Number(localStorage.getItem('apex-best-lap') || NaN), steer: 0, throttle: 0, brake: 0, handbrake: 0,
+    rpm: 950, gear: 1, progress: 0, lane: 0, ai: !isPlayer, finished: false, finishTime: 0, startArmed: isPlayer,
+    wheelNodes: wheels, steeringNodes, brakeMaterials,
+  };
 }
 function placeCarOnTrack(car, t, lane) {
   const p = pointAt(t, lane, .15); const tan = tangentAt(t); const yaw = Math.atan2(-tan.z, tan.x);
   car.x = p.x; car.z = p.z; car.yaw = yaw; car.vx = car.vz = 0; car.speed = 0; car.yawRate = 0; car.vLat = 0; car.t = t; car.lastT = t; car.lane = lane;
   car.group.position.set(p.x, .08, p.z); car.group.rotation.y = yaw;
 }
-function createScenery(barriers) {
-  createTrack(); addBarriers(barriers); addTreeLine(); addPitBuildings();
+function createScenery(barriers, treeSource) {
+  createTrack(); addBarriers(barriers); addTreeLine(treeSource); addPitBuildings();
 }
 function projectToTrack(x, z) {
   let bestD2 = Infinity, bestI = 0, bestU = 0, bestX = 0, bestZ = 0;
@@ -332,13 +355,15 @@ function projectToTrack(x, z) {
 }
 function updateWheels(car, dt) {
   const angle = car.speed * dt / .34;
+  if (car.steeringNodes?.length) car.steeringNodes.forEach(node => { node.rotation.y = car.steer * .48; });
   for (let i = 0; i < car.wheelNodes.length; i++) {
     const wheel = car.wheelNodes[i]; if (!wheel) continue;
-    if (i < 2) wheel.rotation.y = car.steer * .48;
+    if (i < 2 && !car.steeringNodes?.length) wheel.rotation.y = car.steer * .48;
     wheel.rotation.z += angle;
   }
-  if (car.brakeLights?.material) {
-    const mat = car.brakeLights.material; mat.emissive = new THREE.Color(car.brake > .08 ? 0xe12c1b : 0x150200); mat.emissiveIntensity = car.brake > .08 ? 2.5 : .2;
+  for (const mat of car.brakeMaterials || []) {
+    mat.emissive = new THREE.Color(car.brake > .08 ? 0xe12c1b : 0x150200);
+    mat.emissiveIntensity = car.brake > .08 ? 2.5 : .2;
   }
 }
 function readPlayerControls() {
@@ -654,10 +679,11 @@ async function loadAsset(url, label, progress) {
 async function boot() {
   bindUI(); makeRenderer(); setLoading(.05, 'Loading car geometry…');
   try {
-    carAsset = await loadAsset(ASSET('gt3-car.glb'), 'GT3 vehicle', .38);
-    setLoading(.42, 'Loading asphalt PBR maps…'); await loadRoadSurface(); setLoading(.68, 'Circuit materials ready');
+    carAsset = await loadAsset(ASSET('vesper-gtr.glb'), 'Vesper GT-R hero car', .32);
+    treeAsset = await loadAsset(ASSET('field-maple.glb'), 'Field maple tree', .53);
+    setLoading(.56, 'Loading asphalt PBR maps…'); await loadRoadSurface(); setLoading(.72, 'Circuit materials ready');
     barrierAsset = await loadAsset(ASSET('safety-barriers.glb'), 'Trackside safety kit', .86);
-    setLoading(.88, 'Building circuit and race grid…'); createScenery(barrierAsset); initializeCars(carAsset);
+    setLoading(.88, 'Building circuit and race grid…'); createScenery(barrierAsset, treeAsset); initializeCars(carAsset);
     const sky = new THREE.Mesh(new THREE.SphereGeometry(950, 32, 18), new THREE.MeshBasicMaterial({ color: 0x9eb7c6, side: THREE.BackSide, fog: false })); sky.position.y = 110; worldGroup.add(sky);
     setLoading(.97, 'Ready for the green flag');
     ui.bestLap.textContent = Number.isFinite(player.bestLap) ? formatTime(player.bestLap) : '--:--.---';
