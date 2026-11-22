@@ -29,7 +29,9 @@ npm run build
 
 ## What is simulated
 
-The browser build has a lightweight local vehicle model with a bicycle-model steering response, speed-dependent engine force, braking, aerodynamic drag, a friction-limited yaw response, grip loss off the racing surface, recovery, car contact, ABS-style braking and traction-control grip caps, lap timing, saved personal best, and three local racing-line opponents. The opponents are deterministic in-game controllers; they do not call a cloud service and require no downloaded language-model weights.
+The browser build has a lightweight local vehicle model with a bicycle-model steering response, speed-dependent engine force, braking/reverse, aerodynamic drag, a friction-limited yaw response, grip loss off the racing surface, recovery, car contact, ABS-style braking and traction-control grip caps, lap timing, saved personal best, a marked pit lane, grid boxes, curbs, barriers, and three local opponents. Rivals have different pace, reaction cadence, line variation, and overtake tendencies; choose Calm, Club (default), or Challenge before the start. They do not call a cloud service and require no model download or training.
+
+These are humanized local control policies, not a pretrained neural-network model. A generic downloadable driving model would not reliably transfer to this custom vehicle physics; a genuinely learned policy needs training/evaluation against the same simulation.
 
 This is a **web racing prototype**, not an Unreal Engine project or a validated professional-grade motorsport simulator. Its simplified model is not a substitute for a tire model calibrated against real telemetry. The browser build was chosen because this repository is requested to deploy on static GitHub Pages. For high-fidelity Unreal rendering/physics, the appropriate path is a desktop Unreal build or separately hosted GPU Pixel Streaming; a static Pages site cannot run that server.
 
