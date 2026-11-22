@@ -39,11 +39,12 @@ This is a **web racing prototype**, not an Unreal Engine project or a validated 
 
 The following GLBs were supplied in the Google Drive `TRAIN` folder and are included as runtime assets:
 
-- `model-4.glb` → `public/assets/gt3-car.glb` (fictional GT3-style car)
+- `model-8.glb` → `public/assets/vesper-gtr.glb` (detailed Vesper GT-R used for the player and rivals)
+- `model-7.glb` → `public/assets/field-maple.glb` (field maples placed around the circuit)
 - `model-5.glb` → its asphalt base-color, normal, and roughness maps are extracted into `public/assets/asphalt-*.png` (the playable circuit surface is generated as a closed spline mesh)
 - `model-6.glb` → `public/assets/safety-barriers.glb` (barrier and guardrail geometry)
 
-`model-3.glb` is a residential-house interior (LOD/collision mesh set), not a racing asset, so it was intentionally excluded from the game build. Check that all supplied assets are licensed for redistribution before making the Pages site public.
+Check that all supplied assets are licensed for redistribution before making the Pages site public.
 
 ## Deployment
 
